@@ -179,6 +179,13 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
 .cand { text-align: left; min-height: 42px; padding: 6px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; overflow-wrap: anywhere; }
 .cand[aria-pressed="true"] { border-color: var(--dest); box-shadow: 0 0 0 2px color-mix(in srgb, var(--dest) 20%, transparent); font-weight: 700; }
 
+.acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.btn.link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: var(--fg); text-align: center; }
+.row.static { cursor: default; }
+.row.static:hover { border-color: var(--line); }
+.addr { overflow-wrap: anywhere; }
+.toast { position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 3000; background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-weight: 700; max-width: calc(100% - 32px); }
+
 @media (min-width: 860px) {
   .app { grid-template-columns: minmax(0, 1.55fr) minmax(330px, 1fr); align-items: start; }
   .top { grid-column: 1 / -1; }
@@ -220,6 +227,10 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
         <input id="f-name" type="text" maxlength="40" autocomplete="off" placeholder="例：道の駅○○ 大型駐車場">
       </div>
       <div class="field">
+        <label for="f-addr">住所（わかれば）</label>
+        <input id="f-addr" type="text" maxlength="100" autocomplete="off" placeholder="例：千葉県大多喜町田代114">
+      </div>
+      <div class="field">
         <label for="f-kind">種別</label>
         <select id="f-kind"></select>
       </div>
@@ -241,6 +252,12 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
     <form id="view-dest" hidden novalidate>
       <h2>取引先・納品先を追加</h2>
       <div class="field">
+        <label for="d-name">会社名・呼び名（空のままでも可）</label>
+        <input id="d-name" type="text" maxlength="30" autocomplete="off" placeholder="例：○○工場 第2倉庫">
+      </div>
+      <a class="btn link" id="d-gmap" href="#" target="_blank" rel="noopener">Googleマップで会社を調べる</a>
+      <p class="fine">会社名しか分からないときは、Googleマップで調べて、出てきた住所をコピーし、下の住所欄に貼り付けてください。航空写真やストリートビュー、クチコミも見られます。</p>
+      <div class="field">
         <label for="d-addr">住所</label>
         <input id="d-addr" type="text" maxlength="100" autocomplete="off" placeholder="例：愛知県豊田市トヨタ町1">
       </div>
@@ -248,10 +265,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
       <div class="cands" id="d-cands" hidden></div>
       <p class="pos" id="d-pos"></p>
       <p class="note info" id="d-sum" hidden></p>
-      <div class="field">
-        <label for="d-name">呼び名（空のままでも可）</label>
-        <input id="d-name" type="text" maxlength="30" autocomplete="off" placeholder="例：○○工場 第2倉庫">
-      </div>
+      <ul class="list" id="d-near" hidden></ul>
       <p class="fine">位置がずれていたら、ピンをドラッグするか、地図をタップして直せます。</p>
       <p class="err" id="d-err" role="alert" hidden></p>
       <div class="actions">
@@ -262,6 +276,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
   </aside>
 </div>
 
+<div class="toast" id="toast" role="status" hidden></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 (function () {
@@ -316,6 +331,43 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
   function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
   function en(v) { return v === 'yes' || v === 'no' ? v : 'unknown'; }
 
+  // ---------- コピー・Googleマップ ----------
+  var toastTimer = 0;
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.hidden = true; }, 2400);
+  }
+  function copyText(text) {
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select(); ta.setSelectionRange(0, text.length);
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      toast(ok ? 'コピーしました' : 'コピーできませんでした');
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast('コピーしました'); }, fallback);
+    } else { fallback(); }
+  }
+  function gmapUrl(q) { return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q); }
+  function gmapLink(query, text) {
+    var a = h('a', 'btn link small', text);
+    a.href = gmapUrl(query); a.target = '_blank'; a.rel = 'noopener';
+    return a;
+  }
+  function spotCopyValue(sp) { return sp.addr || (sp.lat.toFixed(5) + ',' + sp.lon.toFixed(5)); }
+  function spotCopyBtn(sp) {
+    var b = h('button', 'btn small', sp.addr ? '住所コピー' : '座標コピー'); b.type = 'button';
+    b.setAttribute('aria-label', sp.name + 'の' + (sp.addr ? '住所' : '座標') + 'をコピー');
+    b.addEventListener('click', function (e) { e.stopPropagation(); copyText(spotCopyValue(sp)); });
+    return b;
+  }
+
   function normSpot(o) {
     if (!o) return null;
     var lat = +o.lat, lon = +o.lon;
@@ -324,7 +376,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
       id: String(o.id), name: String(o.name || '名称未設定').slice(0, 60), kind: String(o.kind || 'その他').slice(0, 20),
       spaces: Math.max(0, Math.min(99, Math.round(+o.spaces || 0))),
       toilet: en(o.toilet), night: en(o.night), uber: en(o.uber),
-      lat: lat, lon: lon, createdAt: +o.createdAt || 0, sample: !!o.sample
+      lat: lat, lon: lon, addr: String(o.addr || '').slice(0, 100), createdAt: +o.createdAt || 0, sample: !!o.sample
     };
   }
   function normDest(o) {
@@ -484,6 +536,19 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
       });
       box.appendChild(ul);
     }
+    var ad = null;
+    state.dests.forEach(function (x) { if (x.id === state.activeDest) ad = x; });
+    if (ad) {
+      var acts = h('div', 'acts');
+      if (ad.addr) {
+        var cb = h('button', 'btn small', '住所をコピー'); cb.type = 'button';
+        cb.addEventListener('click', function () { copyText(ad.addr); });
+        acts.appendChild(cb);
+      }
+      var gq = ad.addr ? ((ad.name !== ad.addr ? ad.name + ' ' : '') + ad.addr) : (ad.lat.toFixed(5) + ',' + ad.lon.toFixed(5));
+      acts.appendChild(gmapLink(gq, 'Googleマップで開く'));
+      box.appendChild(acts);
+    }
     box.appendChild(h('p', 'fine', '住所はこの端末にだけ保存され、他の人には見えません。'));
     vList.appendChild(box);
   }
@@ -506,7 +571,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
     }
     var ul = h('ul', 'list');
     items.forEach(function (sp) {
-      var li = h('li');
+      var li = h('li', 'drow');
       var b = h('button', 'row'); b.type = 'button';
       var top = h('div', 'row-top');
       add(top, h('span', 'row-name', sp.name), h('span', 'row-n', '大型 ' + sp.spaces + '台'));
@@ -520,7 +585,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
       FIELDS.forEach(function (f) { chips.appendChild(statusChip(f, sp[f.key])); });
       add(b, top, meta, chips);
       b.addEventListener('click', function () { selectSpot(sp.id, true); });
-      li.appendChild(b); ul.appendChild(li);
+      add(li, b, spotCopyBtn(sp)); ul.appendChild(li);
     });
     vList.appendChild(ul);
     vList.appendChild(h('p', 'fine', 'この版は、この端末の中だけに保存します。他のドライバーと共有するには、共有の保存先が別に必要です。'));
@@ -543,6 +608,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
       add(row, h('dt', null, f.label), dd);
       dl.appendChild(row);
     });
+    if (sp.addr) { var rowA = h('div'); add(rowA, h('dt', null, '住所'), h('dd', 'addr', sp.addr)); dl.appendChild(rowA); }
     var rowT = h('div'), ddT = h('dd');
     add(ddT, document.createTextNode(fmtFull(sp.createdAt)), h('span', 'rel', rel(sp.createdAt)));
     add(rowT, h('dt', null, '投稿日時'), ddT);
@@ -558,6 +624,10 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
     if (sp.sample) vDetail.appendChild(h('p', 'note info', 'これは試し用のサンプルです。実際の場所ではありません。'));
     if (isStale(sp.createdAt)) vDetail.appendChild(h('p', 'note', '投稿から3か月以上たっています。今も使えるか、現地で確認してください。'));
     vDetail.appendChild(h('p', 'coord', fmtCoord(sp.lat, sp.lon)));
+    var acts = h('div', 'acts');
+    acts.appendChild(spotCopyBtn(sp));
+    acts.appendChild(gmapLink(sp.lat.toFixed(5) + ',' + sp.lon.toFixed(5), 'Googleマップで開く'));
+    vDetail.appendChild(acts);
     var act = h('div', 'detail-actions');
     var del = h('button', 'btn danger', 'この場所を削除'); del.type = 'button';
     var timer = 0;
@@ -639,7 +709,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
     });
   }
   function resetForm() {
-    $('f-name').value = ''; $('f-kind').selectedIndex = 0; $('f-spaces').value = '1'; $('f-off').checked = false;
+    $('f-name').value = ''; $('f-addr').value = ''; $('f-kind').selectedIndex = 0; $('f-spaces').value = '1'; $('f-off').checked = false;
     FIELDS.forEach(function (f) { $('f-' + f.key + '-unknown').checked = true; });
     showErr('');
   }
@@ -679,7 +749,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
     if (!$('f-off').checked) return showErr('路上駐車は登録できません。路上ではない場所だけ登録してください。');
     var sp = normSpot({
       id: 's' + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36),
-      name: name, kind: $('f-kind').value, spaces: spaces,
+      name: name, addr: $('f-addr').value.replace(/\s+/g, ' ').trim(), kind: $('f-kind').value, spaces: spaces,
       toilet: radioVal('toilet'), night: radioVal('night'), uber: radioVal('uber'),
       lat: state.draft.lat, lon: state.draft.lon, createdAt: Date.now()
     });
@@ -691,6 +761,26 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
   // ---------- 取引先・納品先の登録（住所検索） ----------
   function showDErr(msg) { var e = $('d-err'); e.textContent = msg; e.hidden = !msg; }
 
+  function renderNear(cd) {
+    var ul = $('d-near');
+    ul.textContent = '';
+    var near = state.spots.map(function (s) { return { s: s, km: distTo(s, cd) }; })
+      .filter(function (x) { return x.km <= 10; })
+      .sort(function (a, b) { return a.km - b.km; })
+      .slice(0, 5);
+    if (!near.length) { ul.hidden = true; return; }
+    near.forEach(function (x) {
+      var li = h('li', 'drow');
+      var box = h('div', 'row static');
+      var top = h('div', 'row-top');
+      add(top, h('span', 'row-name', x.s.name), h('span', 'row-n', '大型 ' + x.s.spaces + '台'));
+      add(box, top, h('div', 'row-meta dist', '約' + fmtKm(x.km) + 'km'));
+      add(li, box, spotCopyBtn(x.s));
+      ul.appendChild(li);
+    });
+    ul.hidden = false;
+  }
+
   function renderDestPos() {
     var p = $('d-pos'), d = state.destDraft, sum = $('d-sum');
     if (d) {
@@ -698,10 +788,11 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
       add(p, document.createTextNode('位置：'), h('b', null, fmtCoord(d.lat, d.lon)), document.createTextNode(d.src === 'manual' ? '（手で指定）' : '（国土地理院の住所検索）'));
       var cd = currentDest();
       sum.hidden = false;
-      sum.textContent = '5km圏内の休憩場所 ' + countWithin(cd, 5) + '件 ／ 10km圏内 ' + countWithin(cd, 10) + '件';
+      sum.textContent = '5km圏内の休憩場所 ' + countWithin(cd, 5) + '件 ／ 10km圏内 ' + countWithin(cd, 10) + '件（近い順に最大5件を下に表示）';
+      renderNear(cd);
     } else {
       p.className = 'pos'; p.textContent = '住所を入れて「住所から位置を探す」を押すか、地図をタップして位置を決めてください。';
-      sum.hidden = true;
+      sum.hidden = true; $('d-near').hidden = true;
     }
   }
 
@@ -731,7 +822,7 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
   }
 
   function startDest() {
-    $('d-addr').value = ''; $('d-name').value = ''; showDErr('');
+    $('d-addr').value = ''; $('d-name').value = ''; showDErr(''); updateGmap();
     clearDraftMarker();
     state.cands = []; state.candIdx = 0; renderCands();
     state.placingDest = true; state.placing = false; state.draft = null; state.destDraft = null; state.selectedId = null;
@@ -772,6 +863,14 @@ input[type="text"], input[type="number"], select { min-height: 46px; padding: 0 
   $('f-find').addEventListener('click', findAddress);
   $('d-addr').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); findAddress(); } });
   $('d-cancel').addEventListener('click', stopDest);
+  function gmapQuery() { return ($('d-name').value + ' ' + $('d-addr').value).replace(/\s+/g, ' ').trim(); }
+  function updateGmap() { var q = gmapQuery(); $('d-gmap').href = q ? gmapUrl(q) : '#'; }
+  $('d-name').addEventListener('input', updateGmap);
+  $('d-addr').addEventListener('input', updateGmap);
+  $('d-gmap').addEventListener('click', function (e) {
+    updateGmap();
+    if (!gmapQuery()) { e.preventDefault(); showDErr('会社名か住所を入れてください。'); }
+  });
   vDest.addEventListener('submit', function (e) {
     e.preventDefault();
     if (!state.destDraft) return showDErr('先に位置を決めてください。');
